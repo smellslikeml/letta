@@ -22,6 +22,7 @@ from letta.services.passage_manager import PassageManager
 from letta.services.run_manager import RunManager
 from letta.services.tool_executor.builtin_tool_executor import LettaBuiltinToolExecutor
 from letta.services.tool_executor.core_tool_executor import LettaCoreToolExecutor
+from letta.services.tool_executor.correction_enforcement import enforce_corrections
 from letta.services.tool_executor.files_tool_executor import LettaFileToolExecutor
 from letta.services.tool_executor.mcp_tool_executor import ExternalMCPToolExecutor
 from letta.services.tool_executor.sandbox_tool_executor import SandboxToolExecutor
@@ -100,6 +101,15 @@ class ToolExecutionManager:
         """
         status = "error"  # set as default for tracking purposes
         try:
+            # TRACE-style enforcement: block proposed calls that violate corrections
+            # the user previously gave (compiled into rules in agent memory), so the
+            # agent must revise before completing rather than re-violating a preference.
+            compliance = enforce_corrections(function_name, function_args, self.agent_state)
+            if not compliance.allowed:
+                self.logger.info(f"Blocking tool {function_name}: violates {len(compliance.violations)} stored correction(s)")
+                status = "error"
+                return ToolExecutionResult(status="error", func_return=compliance.format_guidance(function_name))
+
             executor = ToolExecutorFactory.get_executor(
                 tool.tool_type,
                 message_manager=self.message_manager,
