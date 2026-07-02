@@ -15,6 +15,7 @@ from letta.schemas.llm_config import LLMConfig
 from letta.schemas.message import Message, MessageCreate
 from letta.schemas.provider_trace import BillingContext
 from letta.schemas.user import User
+from letta.services.summarizer.cache_aware_eviction import apply_cache_aware_eviction
 from letta.services.summarizer.self_summarizer import self_summarize_all, self_summarize_sliding_window
 from letta.services.summarizer.summarizer_all import summarize_all
 from letta.services.summarizer.summarizer_config import CompactionSettings, get_default_prompt_for_mode, get_default_summarizer_model
@@ -178,6 +179,19 @@ async def compact_messages(
         and updated context token estimate.
     """
     summarizer_config = compaction_settings if compaction_settings else CompactionSettings()
+
+    # Cache-aware eviction (TokenPilot, Lifecycle-Aware Eviction): each compaction
+    # rewrites the message sequence and invalidates the prompt-cache prefix. When we
+    # are at/over the trigger, batch the sliding-window eviction so this compaction
+    # reclaims enough to defer the next cache-breaking compaction for many turns.
+    summarizer_config, cache_eviction_plan = apply_cache_aware_eviction(
+        summarizer_config,
+        context_tokens_before=context_tokens_before,
+        trigger_threshold=trigger_threshold,
+        context_window=agent_llm_config.context_window,
+    )
+    if cache_eviction_plan.adjusted:
+        logger.info(f"Cache-aware eviction: {cache_eviction_plan.reason}")
 
     # Build the LLMConfig used for summarization
     summarizer_llm_config = await build_summarizer_llm_config(
